@@ -9,12 +9,13 @@ An AI-powered web application that converts Azure Bicep infrastructure-as-code t
 - **GitHub repo import** — Point at a GitHub repository and auto-discover all `.bicep` / `.bicepparam` files
 - **AI agent conversation** — Watch the Claude agent reason, call tools, and iterate on the conversion
 - **Validation** — Runs `tofu validate` against the generated Terraform to catch errors
-- **Cost estimation** — Estimates monthly AWS costs for the converted infrastructure
+- **Cost estimation** — Estimates monthly cloud costs for the converted infrastructure
 - **Policy & security scanning** — Scans output against OPA policies and Trivy security rules
 - **Resource graph** — Interactive visualisation of Bicep-to-Terraform resource mappings
 - **Diff viewer** — Side-by-side before/after comparison
 - **Deployment** — Deploy converted Terraform directly to Azure with a chat-driven agent
-- **Conversion history** — Browse and restore previous conversions
+- **Token usage dashboard** — Per-conversion and cumulative token/cost tracking
+- **Conversion history** — Browse and restore previous conversions with cost data
 - **Role-based access control** — Four-tier RBAC (Viewer → Converter → Deployer → Admin)
 - **Audit logging** — Full audit trail of all actions
 
@@ -32,104 +33,234 @@ An AI-powered web application that converts Azure Bicep infrastructure-as-code t
 | Cache | Redis 7 (optional Upstash) |
 | Testing | Vitest + jsdom |
 | Container | Docker (multi-stage) + Docker Compose |
+| IaC CLIs | OpenTofu, Azure CLI, Trivy (bundled in Docker) |
 
 ## Prerequisites
 
 - **Node.js** 20+
 - **npm** 10+
 - An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com))
-- *(Optional)* Docker & Docker Compose for containerised setup
-- *(Optional)* PostgreSQL 16 and Redis 7 for persistence and caching
+- **Docker & Docker Compose** (required for full stack)
+- *(Optional for local dev without Docker)* PostgreSQL 16 and Redis 7
 
-## Quick Start (Local Development)
+---
 
-### 1. Clone and install
+## Full Setup on a New Laptop
+
+Follow these steps in order to get the app running with all historical data intact.
+
+### Step 1: Clone the repository
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/grohan2002/bicep-ui.git
 cd bicep-ui
+```
+
+### Step 2: Install Node.js dependencies
+
+```bash
 npm install
 ```
 
-### 2. Configure environment
+### Step 3: Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set the required values:
+Edit `.env` and fill in the required values:
 
 ```env
 # ── Required ──────────────────────────────────────────────
 ANTHROPIC_API_KEY=sk-ant-...          # Your Anthropic API key
 
 # ── Authentication ────────────────────────────────────────
-AUTH_SECRET=                           # Generate: openssl rand -base64 32
+# Generate with: openssl rand -base64 32
+AUTH_SECRET=<paste-generated-secret>
+AUTH_TRUST_HOST=true
+AUTH_URL=http://localhost:3000
 
 # GitHub OAuth (optional — credentials login works without these)
 AUTH_GITHUB_ID=
 AUTH_GITHUB_SECRET=
 
-# ── Optional services ────────────────────────────────────
-DATABASE_URL=postgresql://user:pass@localhost:5432/bicepui   # PostgreSQL
-REDIS_URL=redis://localhost:6379                              # Redis cache
+# ── Database (matches docker-compose.yml defaults) ────────
+DATABASE_URL=postgresql://bicepui:bicepui@postgres:5432/bicepui
+
+# ── Redis ─────────────────────────────────────────────────
+REDIS_URL=redis://redis:6379
 
 # Upstash Redis (alternative to self-hosted Redis)
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 
+# ── Azure Deployment (optional, for Deploy & Test) ────────
+ARM_SUBSCRIPTION_ID=
+ARM_TENANT_ID=
+ARM_CLIENT_ID=
+ARM_CLIENT_SECRET=
+
 # ── Logging ───────────────────────────────────────────────
-LOG_LEVEL=info                         # debug | info | warn | error
+LOG_LEVEL=info
+NODE_ENV=production
 ```
 
-> **Minimum setup:** Only `ANTHROPIC_API_KEY` and `AUTH_SECRET` are required to run locally. The app falls back to in-memory rate limiting and localStorage persistence when Postgres / Redis are unavailable.
+> **Minimum setup:** Only `ANTHROPIC_API_KEY` and `AUTH_SECRET` are required. The app falls back to in-memory rate limiting and localStorage persistence when Postgres / Redis are unavailable.
 
-### 3. Start the dev server
+### Step 4: Start the Docker stack
 
 ```bash
-npm run dev
+docker compose up --build -d
 ```
+
+This starts three services:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| **app** | 3000 | Bicep UI (Next.js standalone + OpenTofu + Azure CLI + Trivy) |
+| **postgres** | 5432 | PostgreSQL 16 with persistent volume |
+| **redis** | 6379 | Redis 7 with persistent volume |
+
+Wait for all containers to be healthy:
+
+```bash
+docker compose ps
+```
+
+### Step 5: Create the database schema
+
+The Prisma schema needs to be applied to the empty PostgreSQL database:
+
+```bash
+# Option A: Using Prisma from outside the container
+DATABASE_URL="postgresql://bicepui:bicepui@localhost:5432/bicepui" npx prisma db push
+
+# Option B: Using the included SQL dump file
+docker cp bicepui-dump.sql bicep-ui-postgres-1:/tmp/bicepui-dump.sql
+docker exec -i bicep-ui-postgres-1 psql -U bicepui -d bicepui -f /tmp/bicepui-dump.sql
+```
+
+### Step 6: Restore historical data (optional)
+
+If you have a database dump from another machine with conversion/deployment history:
+
+```bash
+# Copy the dump file into the postgres container and restore
+docker cp bicepui-dump.sql bicep-ui-postgres-1:/tmp/bicepui-dump.sql
+docker exec -i bicep-ui-postgres-1 psql -U bicepui -d bicepui -f /tmp/bicepui-dump.sql
+```
+
+The included `bicepui-dump.sql` contains the full schema (tables, indexes, foreign keys, enums). If you have a dump with data rows, it will also restore all historical conversions, deployments, and audit logs.
+
+### Step 7: Generate the Prisma client
+
+```bash
+npx prisma generate
+```
+
+### Step 8: Verify everything is running
+
+```bash
+# Check containers are healthy
+docker compose ps
+
+# Check database tables exist
+docker exec bicep-ui-postgres-1 psql -U bicepui -d bicepui -c "\dt"
+```
+
+Expected output:
+
+```
+ Schema |    Name     | Type  |  Owner
+--------+-------------+-------+---------
+ public | audit_logs  | table | bicepui
+ public | conversions | table | bicepui
+ public | deployments | table | bicepui
+ public | users       | table | bicepui
+```
+
+### Step 9: Open the app
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 4. Log in
-
-Use the built-in credentials:
-
+**Default login credentials:**
 - **Email:** `admin@bicep.dev`
 - **Password:** `admin`
 
 Or configure GitHub OAuth via `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` for SSO.
 
-## Docker Setup
+---
 
-Spin up the full stack (app + PostgreSQL + Redis) in one command:
+## Creating a Database Dump (for Migration)
+
+To export the current database for transfer to another machine:
 
 ```bash
-docker compose up --build
+docker exec bicep-ui-postgres-1 pg_dump -U bicepui -d bicepui --clean --if-exists > bicepui-dump.sql
 ```
 
-This starts:
+This creates a portable SQL file with:
+- Schema (tables, indexes, foreign keys, `Role` enum)
+- All data rows (conversions, deployments, users, audit logs)
+- `--clean --if-exists` flags so it can be safely re-imported on a fresh database
 
-| Service | Port | Description |
-|---------|------|-------------|
-| **app** | 3000 | Bicep UI (Next.js standalone) |
-| **postgres** | 5432 | PostgreSQL 16 with persistent volume |
-| **redis** | 6379 | Redis 7 with persistent volume |
+---
 
-The app waits for Postgres to pass its health check before starting.
+## Local Development (without Docker)
 
-To stop everything:
+If you prefer running without Docker:
 
 ```bash
+# 1. Install dependencies
+npm install
+
+# 2. Configure .env (set DATABASE_URL to localhost if using local Postgres)
+cp .env.example .env
+
+# 3. Push schema to your local Postgres
+DATABASE_URL="postgresql://user:pass@localhost:5432/bicepui" npx prisma db push
+
+# 4. Generate Prisma client
+npx prisma generate
+
+# 5. Start dev server
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+> **Note:** Local dev mode requires OpenTofu or Terraform to be installed for validation. The Docker image bundles these automatically. Install with: `brew install opentofu`
+
+---
+
+## Docker Management
+
+```bash
+# Start all services
+docker compose up --build -d
+
+# View logs
+docker compose logs -f app
+
+# Restart just the app (after code changes)
+docker compose up --build -d app
+
+# Stop everything (keep data)
 docker compose down
-```
 
-To also remove persisted data:
-
-```bash
+# Stop and delete all data (fresh start)
 docker compose down -v
 ```
+
+### Rebuilding after code changes
+
+```bash
+# Clear Next.js cache and rebuild
+rm -rf .next
+docker compose up --build -d
+```
+
+---
 
 ## Available Scripts
 
@@ -142,27 +273,14 @@ docker compose down -v
 | `npm test` | Run Vitest in watch mode |
 | `npm run test:ci` | Run Vitest once (CI mode) |
 
-## Database Setup (Optional)
-
-If using PostgreSQL for persistence:
-
-```bash
-# Generate Prisma client
-npx prisma generate
-
-# Run migrations
-npx prisma db push
-
-# Seed data (if applicable)
-npx prisma db seed
-```
+---
 
 ## API Routes
 
 ### Core Conversion
 | Method | Route | Description |
 |--------|-------|-------------|
-| `POST` | `/api/convert` | Bicep → Terraform conversion (SSE stream) |
+| `POST` | `/api/convert` | Bicep to Terraform conversion (SSE stream) |
 | `POST` | `/api/cost-estimate` | Estimate cloud costs for generated Terraform |
 | `POST` | `/api/policy` | OPA policy compliance scan |
 | `POST` | `/api/scan` | Trivy security scan |
@@ -190,6 +308,8 @@ npx prisma db seed
 
 Interactive API docs are available at [http://localhost:3000/api-docs](http://localhost:3000/api-docs).
 
+---
+
 ## Project Structure
 
 ```
@@ -198,7 +318,7 @@ bicep-ui/
 │   ├── api/                      #   API routes
 │   ├── convert/                  #   Conversion page
 │   ├── batch/                    #   Batch conversion page
-│   ├── history/                  #   History browser
+│   ├── history/                  #   History browser (with usage stats)
 │   ├── mappings/                 #   Resource mapping reference
 │   ├── login/                    #   Login page
 │   └── api-docs/                 #   Swagger UI
@@ -206,15 +326,24 @@ bicep-ui/
 ├── components/
 │   ├── ui/                       # shadcn/ui base components
 │   ├── conversion/               # Conversion UI (file upload, GitHub import, etc.)
-│   ├── deployment/               # Deployment panels
+│   ├── deployment/               # Deployment panels (Azure config dialog)
 │   ├── editor/                   # Monaco editor & diff viewer
 │   ├── chat/                     # Agent conversation UI
 │   └── layout/                   # Sidebar, theme toggle
 │
 ├── lib/
 │   ├── agent/                    # Bicep conversion agent (Claude SDK)
+│   │   ├── stream.ts             #   Agentic loop with SSE streaming
+│   │   ├── system-prompt.ts      #   Conversion rules & prompt
+│   │   ├── tools.ts              #   Tool definitions (9 tools)
+│   │   └── tool-handlers.ts      #   Tool implementations
 │   ├── deploy-agent/             # Deployment agent (Claude SDK)
+│   │   ├── stream.ts             #   Deploy agentic loop
+│   │   ├── system-prompt.ts      #   9-step deploy workflow
+│   │   ├── tools.ts              #   Tool definitions (7 tools)
+│   │   └── tool-handlers.ts      #   Tool implementations
 │   ├── store.ts                  # Zustand store
+│   ├── cost.ts                   # Token cost calculation & formatting
 │   ├── auth.ts                   # NextAuth v5 config
 │   ├── rbac.ts                   # Role-based access control
 │   ├── github.ts                 # GitHub API integration
@@ -227,12 +356,57 @@ bicep-ui/
 ├── prisma/                       # Database schema
 ├── samples/                      # Example Bicep files for testing
 ├── policies/                     # Example OPA policies
-├── __tests__/                    # Test suite
+├── __tests__/                    # Test suite (387 tests)
 │
-├── Dockerfile                    # Multi-stage production build
+├── Dockerfile                    # Multi-stage build (Node + OpenTofu + Azure CLI + Trivy)
 ├── docker-compose.yml            # Full stack (app + Postgres + Redis)
+├── bicepui-dump.sql              # PostgreSQL dump for data migration
+├── Bicep-UI-Agent-Architecture.pptx  # Architecture overview deck
 └── .env.example                  # Environment variable template
 ```
+
+---
+
+## Agent Architecture
+
+The app uses two Claude-powered agents that work in sequence:
+
+### Conversion Agent (9 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `parse_bicep` | Parse Bicep into structured AST |
+| `lookup_resource_mapping` | Find Terraform equivalent for a Bicep resource type |
+| `generate_terraform` | Generate formatted HCL blocks |
+| `write_terraform_files` | Write .tf files to disk |
+| `validate_terraform` | Run `tofu init` + `tofu validate` |
+| `format_terraform` | Run `tofu fmt` for canonical HCL style |
+| `read_bicep_file` | Read a .bicep file from disk |
+| `list_bicep_files` | List .bicep files in a directory |
+| `read_bicep_file_content` | Read from in-memory project context (multi-file) |
+
+- **Models:** Claude Sonnet 4 (complex files) / Claude Haiku 4.5 (simple files)
+- **Max rounds:** 30 (single-file) / 40 (multi-file)
+
+### Deployment Agent (7 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `terraform_plan` | Preview changes (120s timeout) |
+| `terraform_apply` | Deploy with auto-approve (300s timeout) |
+| `get_terraform_outputs` | Extract resource IDs and endpoints |
+| `check_azure_resource` | Verify resource exists in Azure |
+| `run_connectivity_test` | HTTP, DNS, or TCP connectivity tests |
+| `check_resource_config` | Validate deployed config vs Bicep intent |
+| `terraform_destroy` | Tear down resources (user-gated) |
+
+- **Model:** Claude Sonnet 4 (always)
+- **Max rounds:** 40
+- **Workflow:** Plan → Pre-flight Checks → Apply → Outputs → Test (Existence + Connectivity + Config) → Report
+
+See `Bicep-UI-Agent-Architecture.pptx` for visual diagrams.
+
+---
 
 ## Sample Bicep Files
 
@@ -248,10 +422,12 @@ The `samples/` directory includes example files for testing conversions:
 | `06-multi-module/` | Multi-file project (main + modules + params) |
 | `07-hub-spoke-network.bicep` | Hub-and-spoke network topology with loops |
 
+---
+
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (387 tests)
 npm run test:ci
 
 # Run tests in watch mode
@@ -260,6 +436,8 @@ npm test
 # Run a specific test file
 npx vitest run __tests__/lib/github.test.ts
 ```
+
+---
 
 ## RBAC Roles
 
@@ -270,10 +448,31 @@ npx vitest run __tests__/lib/github.test.ts
 | **Deployer** | All Converter + deploy Terraform to Azure |
 | **Admin** | All Deployer + view audit logs, manage users |
 
+---
+
 ## Architecture Notes
 
 **Streaming:** Conversions and deployments use Server-Sent Events (SSE). The Claude agent streams its reasoning, tool calls, and outputs in real time via `lib/stream-client.ts`.
 
 **Rate limiting:** An 8-second pacing delay is applied between agent rounds to stay within Anthropic API rate limits. Message history is compressed after round 5 to reduce token usage.
 
+**Terraform output accumulation:** When the agent calls `write_terraform_files` multiple times (e.g., .tf files first, then .tfvars.example), outputs are merged — not replaced — so no files are lost.
+
+**Azure deployment readiness:** The conversion agent generates globally unique names (random_string suffix) for Key Vault, Storage Account, Container Registry, etc. AKS Kubernetes versions use data sources instead of hardcoded values.
+
 **Zustand + React 19:** Store selectors must never return new object/array references (no `.map()`, `.filter()`, `Object.keys()` in selectors). Use `useMemo` inside components for derived state. The `zustand/persist` middleware is not used — persistence is handled manually with localStorage.
+
+**Token tracking:** Each conversion tracks input/output/cache tokens and computes USD cost. The history page shows per-entry cost and cumulative usage stats (Total Conversions, Total Tokens, Total Spent).
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| `Cannot connect to Docker daemon` | Start Docker Desktop first |
+| `prisma db push` fails with `P1001` | Use `localhost` instead of `postgres` in DATABASE_URL when running outside Docker |
+| Stale Next.js cache causing runtime errors | Run `rm -rf .next` then rebuild |
+| Zustand infinite rerender loop | Check store selectors — never return new refs (use `useMemo` inside component) |
+| `tofu` / `terraform` not found (local dev) | Install OpenTofu: `brew install opentofu` or use Docker which bundles it |
+| Conversion shows only `.tfvars.example` | Fixed in latest — terraform outputs are now accumulated across writes |
