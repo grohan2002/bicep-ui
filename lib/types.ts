@@ -48,6 +48,9 @@ export interface ValidationError {
   severity: "error" | "warning";
 }
 
+/** Source IaC format for a conversion. */
+export type SourceFormat = "bicep" | "cloudformation";
+
 /** One entry in the conversion history sidebar. */
 export interface ConversionHistoryEntry {
   id: string;
@@ -66,6 +69,11 @@ export interface ConversionHistoryEntry {
   bicepFileCount?: number;
   /** Token usage and cost info (added post-launch; absent on legacy entries) */
   costInfo?: CostInfo;
+  /**
+   * Which source IaC language the input was. Absent on legacy entries from
+   * before CloudFormation support — treat those as "bicep".
+   */
+  sourceFormat?: SourceFormat;
 }
 
 /** A single message in the agent conversation log. */

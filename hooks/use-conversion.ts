@@ -86,13 +86,13 @@ export function useConversion() {
           const entry: ConversionHistoryEntry = {
             id: uuidv4(),
             timestamp: new Date().toISOString(),
-            bicepFile: s.bicepFilename || "untitled.bicep",
+            bicepFile: s.bicepFilename || (s.sourceFormat === "cloudformation" ? "untitled.yaml" : "untitled.bicep"),
             bicepContent: s.bicepContent,
             terraformFiles: s.terraformFiles,
             validationPassed: s.validationResult?.passed ?? false,
             agentConversation: s.messages,
             resourcesConverted: Object.keys(s.terraformFiles).length,
-            // Multi-file metadata
+            // Multi-file metadata (Bicep-only for now)
             isMultiFile: s.isMultiFile,
             ...(s.isMultiFile
               ? {
@@ -101,6 +101,8 @@ export function useConversion() {
                   bicepFileCount: Object.keys(s.bicepFiles).length,
                 }
               : {}),
+            // Source IaC format ("bicep" or "cloudformation")
+            sourceFormat: s.sourceFormat,
             // Token usage and cost
             ...(costInfo ? { costInfo } : {}),
           };
@@ -157,7 +159,13 @@ export function useConversion() {
             apiKey,
           );
         } else {
-          await sendConversionStream(bicepContent, callbacks, controller.signal, apiKey);
+          await sendConversionStream(
+            bicepContent,
+            callbacks,
+            controller.signal,
+            apiKey,
+            store.sourceFormat,
+          );
         }
       } catch (err) {
         if ((err as Error).name !== "AbortError") {

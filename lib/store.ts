@@ -26,6 +26,7 @@ import type {
   TestResult,
   DeploySummary,
   CostInfo,
+  SourceFormat,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,13 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface ConversionState {
-  // Bicep input
+  // Source format — "bicep" or "cloudformation". Drives the UI file-extension
+  // filter, editor language, sample list, and the API pipeline that runs on
+  // Convert. Defaults to "bicep" for back-compat.
+  sourceFormat: SourceFormat;
+
+  // Source input (the field name is historical — holds Bicep OR CF content
+  // depending on sourceFormat).
   bicepContent: string;
   bicepFilename: string;
 
@@ -82,6 +89,7 @@ export interface ConversionState {
   deployResourceGroup: string | null;
 
   // Actions — conversion
+  setSourceFormat: (format: SourceFormat) => void;
   setBicepContent: (content: string, filename?: string) => void;
   setBicepFiles: (files: BicepFiles, entryPoint?: string) => void;
   clearBicepFiles: () => void;
@@ -179,6 +187,7 @@ function saveHistory(history: ConversionHistoryEntry[]) {
 // ---------------------------------------------------------------------------
 
 export const useConversionStore = create<ConversionState>()((set) => ({
+  sourceFormat: "bicep" as SourceFormat,
   bicepContent: "",
   bicepFilename: "",
   bicepFiles: {} as BicepFiles,
@@ -187,6 +196,20 @@ export const useConversionStore = create<ConversionState>()((set) => ({
   ...initialConversionState,
   ...initialDeploymentState,
   history: [],
+
+  setSourceFormat: (format) =>
+    // Toggling source format wipes the current source + output so the user
+    // doesn't accidentally submit Bicep content while CF is selected (or vice
+    // versa). History is preserved.
+    set({
+      sourceFormat: format,
+      bicepContent: "",
+      bicepFilename: "",
+      bicepFiles: {} as BicepFiles,
+      isMultiFile: false,
+      entryPoint: "",
+      ...initialConversionState,
+    }),
 
   setBicepContent: (content, filename) =>
     set({

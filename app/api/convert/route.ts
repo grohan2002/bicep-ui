@@ -5,6 +5,7 @@
 
 import { NextRequest } from "next/server";
 import { chatStream, chatStreamMultiFile } from "@/lib/agent/stream";
+import { chatStreamCloudFormation } from "@/lib/cf-agent/stream";
 import { ConvertRequestSchema, ConvertMultiFileRequestSchema } from "@/lib/schemas";
 import { createRequestLogger } from "@/lib/logger";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -74,10 +75,19 @@ function handleSingleFile(
     );
   }
 
-  const { bicepContent, apiKey } = parsed.data;
+  const { bicepContent, apiKey, sourceFormat } = parsed.data;
+  const isCloudFormation = sourceFormat === "cloudformation";
 
-  log.info({ ip, contentLength: bicepContent.length }, "Conversion started");
-  auditLog("conversion.started", { contentLength: bicepContent.length }, undefined, ip);
+  log.info(
+    { ip, contentLength: bicepContent.length, sourceFormat },
+    "Conversion started",
+  );
+  auditLog(
+    "conversion.started",
+    { contentLength: bicepContent.length, sourceFormat },
+    undefined,
+    ip,
+  );
 
   const encoder = new TextEncoder();
   const { readable, writable } = new TransformStream();
@@ -90,10 +100,13 @@ function handleSingleFile(
 
   const signal = request.signal;
 
-  // Check cache first (only when not using a custom API key)
+  // Check cache first (only when not using a custom API key). Cache key
+  // incorporates sourceFormat so Bicep and CF content with the same bytes
+  // never collide.
+  const cacheKey = isCloudFormation ? `cf:${bicepContent}` : bicepContent;
   const cacheCheck = (async () => {
     if (!apiKey) {
-      const cached = await getCachedConversion(bicepContent);
+      const cached = await getCachedConversion(cacheKey);
       if (cached) {
         log.info("Cache hit — replaying cached conversion");
         sendEvent({ type: "terraform_output", files: cached.terraformFiles });
@@ -120,13 +133,20 @@ function handleSingleFile(
       sendEvent(event);
     }
 
-    chatStream(bicepContent, wrappedSendEvent, signal, apiKey)
+    const streamFn = isCloudFormation ? chatStreamCloudFormation : chatStream;
+
+    streamFn(bicepContent, wrappedSendEvent, signal, apiKey)
       .then(() => {
-        log.info("Conversion completed");
-        auditLog("conversion.completed", { contentLength: bicepContent.length }, undefined, ip);
+        log.info({ sourceFormat }, "Conversion completed");
+        auditLog(
+          "conversion.completed",
+          { contentLength: bicepContent.length, sourceFormat },
+          undefined,
+          ip,
+        );
 
         if (!apiKey && cachedFiles && Object.keys(cachedFiles).length > 0) {
-          setCachedConversion(bicepContent, {
+          setCachedConversion(cacheKey, {
             terraformFiles: cachedFiles,
             validationPassed: cachedValidation,
             model: cachedModel,

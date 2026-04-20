@@ -5,7 +5,7 @@
 // typed callbacks to the UI layer.
 // ---------------------------------------------------------------------------
 
-import type { BicepFiles, StreamEvent, ToolCallInfo, TerraformFiles, CostInfo } from "./types";
+import type { BicepFiles, StreamEvent, ToolCallInfo, TerraformFiles, CostInfo, SourceFormat } from "./types";
 
 // ---------------------------------------------------------------------------
 // Callback interface
@@ -31,6 +31,7 @@ export async function sendConversionStream(
   callbacks: ConversionCallbacks,
   signal?: AbortSignal,
   apiKey?: string,
+  sourceFormat: SourceFormat = "bicep",
 ): Promise<void> {
   let response: Response;
 
@@ -38,7 +39,11 @@ export async function sendConversionStream(
     response = await fetch("/api/convert", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bicepContent, ...(apiKey ? { apiKey } : {}) }),
+      body: JSON.stringify({
+        bicepContent,
+        sourceFormat,
+        ...(apiKey ? { apiKey } : {}),
+      }),
       signal,
     });
   } catch (err: unknown) {

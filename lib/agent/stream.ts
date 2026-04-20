@@ -71,7 +71,7 @@ const KEEP_RECENT_EXCHANGES = 3; // keep last 3 assistant+user pairs
 
 let lastApiCallTime = 0;
 
-async function paceApiCall(): Promise<void> {
+export async function paceApiCall(): Promise<void> {
   const now = Date.now();
   const elapsed = now - lastApiCallTime;
   if (lastApiCallTime > 0 && elapsed < ROUND_PACING_MS) {
@@ -87,7 +87,7 @@ async function paceApiCall(): Promise<void> {
 // input tokens while preserving the original user request and recent context
 // ---------------------------------------------------------------------------
 
-function compressMessages(messages: MessageParam[], round: number): MessageParam[] {
+export function compressMessages(messages: MessageParam[], round: number): MessageParam[] {
   // Only compress after threshold
   if (round <= COMPRESS_AFTER_ROUND) return messages;
 

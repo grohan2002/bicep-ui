@@ -115,6 +115,8 @@ export function ConversionPanel() {
   const deploymentStatus = useConversionStore((s) => s.deploymentStatus);
   const costInfo = useConversionStore((s) => s.costInfo);
   const setBicepContent = useConversionStore((s) => s.setBicepContent);
+  const sourceFormat = useConversionStore((s) => s.sourceFormat);
+  const setSourceFormat = useConversionStore((s) => s.setSourceFormat);
   const isMultiFile = useConversionStore((s) => s.isMultiFile);
   const bicepFiles = useConversionStore((s) => s.bicepFiles);
   const entryPoint = useConversionStore((s) => s.entryPoint);
@@ -317,12 +319,15 @@ export function ConversionPanel() {
     deploymentStatus === "deploying" ||
     deploymentStatus === "testing" ||
     deploymentStatus === "destroying";
+  // Deploy & Test is currently Azure-only; hide for CloudFormation until AWS
+  // deploy support lands.
   const canDeploy =
     status === "done" &&
     hasOutput &&
     !isDeploying &&
     deploymentStatus !== "awaiting_destroy" &&
-    hasPermission(userRole, "DEPLOYER");
+    hasPermission(userRole, "DEPLOYER") &&
+    sourceFormat === "bicep";
 
   // Keyboard shortcuts: Cmd/Ctrl+Enter to convert, Escape to cancel
   useEffect(() => {
@@ -348,11 +353,45 @@ export function ConversionPanel() {
       {/* Top bar */}
       <div className="flex h-12 items-center justify-between border-b border-border px-4 shrink-0">
         <div className="flex items-center gap-3">
+          {/* Source format toggle — switches pipelines (Bicep vs CloudFormation). */}
+          <div
+            role="group"
+            aria-label="Source format"
+            className="inline-flex overflow-hidden rounded-md border border-border text-[11px] font-medium"
+          >
+            <button
+              type="button"
+              onClick={() => sourceFormat !== "bicep" && setSourceFormat("bicep")}
+              disabled={isConverting || isDeploying}
+              className={`px-2.5 py-1 transition-colors ${
+                sourceFormat === "bicep"
+                  ? "bg-cta text-cta-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              } disabled:opacity-50`}
+              title="Convert Azure Bicep"
+            >
+              Bicep
+            </button>
+            <button
+              type="button"
+              onClick={() => sourceFormat !== "cloudformation" && setSourceFormat("cloudformation")}
+              disabled={isConverting || isDeploying}
+              className={`border-l border-border px-2.5 py-1 transition-colors ${
+                sourceFormat === "cloudformation"
+                  ? "bg-cta text-cta-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              } disabled:opacity-50`}
+              title="Convert AWS CloudFormation"
+            >
+              CloudFormation
+            </button>
+          </div>
           <FileCode className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">
             {isMultiFile
               ? `Project (${bicepFileCount} files)`
-              : bicepFilename || "Untitled.bicep"}
+              : bicepFilename ||
+                (sourceFormat === "cloudformation" ? "Untitled.yaml" : "Untitled.bicep")}
           </span>
           {status !== "idle" && statusBadge && (
             <Badge
@@ -516,7 +555,11 @@ export function ConversionPanel() {
               <div className="flex flex-1 flex-col min-w-0">
                 <div className="flex h-8 items-center border-b border-border bg-muted/30 px-3">
                   <span className="text-xs font-medium text-muted-foreground">
-                    {isMultiFile ? `Bicep — ${bicepFilename || entryPoint}` : "Bicep (Input)"}
+                    {isMultiFile
+                      ? `Bicep — ${bicepFilename || entryPoint}`
+                      : sourceFormat === "cloudformation"
+                      ? "CloudFormation (Input)"
+                      : "Bicep (Input)"}
                   </span>
                 </div>
                 <div className="flex-1 min-h-0">
@@ -524,7 +567,11 @@ export function ConversionPanel() {
                     <CodeEditor
                       value={bicepContent}
                       onChange={isMultiFile ? undefined : setBicepContent}
-                      language="bicep"
+                      language={
+                        sourceFormat === "cloudformation"
+                          ? (bicepContent.trim().startsWith("{") ? "json" : "yaml")
+                          : "bicep"
+                      }
                       readOnly={isConverting || isMultiFile}
                     />
                   ) : (

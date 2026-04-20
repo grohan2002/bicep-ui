@@ -22,7 +22,7 @@ function EditorLoadingSkeleton() {
 interface CodeEditorProps {
   value: string;
   onChange?: (value: string) => void;
-  language: "bicep" | "hcl" | "json";
+  language: "bicep" | "hcl" | "json" | "yaml";
   readOnly?: boolean;
   errorMarkers?: Array<{ line: number; message: string }>;
   height?: string;

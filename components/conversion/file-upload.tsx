@@ -13,16 +13,29 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 type UploadMode = "single" | "project" | "github";
 
+const CF_EXTENSIONS = [".yaml", ".yml", ".json", ".template"];
+
 export function FileUpload() {
   const [dragOver, setDragOver] = useState(false);
   const [mode, setMode] = useState<UploadMode>("single");
   const setBicepContent = useConversionStore((s) => s.setBicepContent);
+  const sourceFormat = useConversionStore((s) => s.sourceFormat);
+
+  const isCf = sourceFormat === "cloudformation";
+  const acceptedExts = isCf ? CF_EXTENSIONS : [".bicep"];
+  const acceptAttr = acceptedExts.join(",");
+  const formatLabel = isCf ? "CloudFormation template" : ".bicep file";
+  const pasteHint = isCf
+    ? "Or paste YAML/JSON CloudFormation directly in the editor"
+    : "Or paste Bicep code directly in the editor";
 
   const handleFile = useCallback(
     (file: File) => {
-      if (!file.name.endsWith(".bicep")) {
+      const name = file.name.toLowerCase();
+      const allowed = acceptedExts.some((ext) => name.endsWith(ext));
+      if (!allowed) {
         toast.error("Invalid file type", {
-          description: "Please upload a .bicep file",
+          description: `Please upload a ${formatLabel}`,
         });
         return;
       }
@@ -46,7 +59,7 @@ export function FileUpload() {
       };
       reader.readAsText(file);
     },
-    [setBicepContent]
+    [setBicepContent, acceptedExts, formatLabel]
   );
 
   const handleDrop = useCallback(
@@ -85,6 +98,8 @@ export function FileUpload() {
           size="sm"
           className="h-7 text-xs gap-1.5"
           onClick={() => setMode("project")}
+          disabled={isCf}
+          title={isCf ? "Multi-file projects are Bicep-only for now" : undefined}
         >
           <FolderUp className="h-3 w-3" />
           Project
@@ -94,6 +109,8 @@ export function FileUpload() {
           size="sm"
           className="h-7 text-xs gap-1.5"
           onClick={() => setMode("github")}
+          disabled={isCf}
+          title={isCf ? "GitHub import is Bicep-only for now" : undefined}
         >
           <Github className="h-3 w-3" />
           GitHub
@@ -131,23 +148,22 @@ export function FileUpload() {
               )}
             </div>
             <div className="text-center">
-              <p className="font-medium">Drop a .bicep file here</p>
+              <p className="font-medium">Drop a {formatLabel} here</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 or click to browse
+                {isCf ? " (.yaml, .yml, .json, .template)" : ""}
               </p>
             </div>
             <label className={cn(buttonVariants(), "cursor-pointer")}>
               Browse Files
               <input
                 type="file"
-                accept=".bicep"
+                accept={acceptAttr}
                 className="hidden"
                 onChange={handleChange}
               />
             </label>
-            <p className="text-xs text-muted-foreground">
-              Or paste Bicep code directly in the editor
-            </p>
+            <p className="text-xs text-muted-foreground">{pasteHint}</p>
           </div>
         )}
       </div>

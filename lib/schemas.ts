@@ -8,6 +8,12 @@ import { z } from "zod";
 export const ConvertRequestSchema = z.object({
   bicepContent: z.string().min(1, "bicepContent must be a non-empty string"),
   apiKey: z.string().optional(),
+  /**
+   * Source IaC format. Defaults to "bicep" for back-compat with clients that
+   * predate CloudFormation support. When "cloudformation", `bicepContent`
+   * holds CF YAML or JSON and dispatch goes to the CF pipeline.
+   */
+  sourceFormat: z.enum(["bicep", "cloudformation"]).default("bicep"),
 });
 
 /** POST /api/convert — multi-file */

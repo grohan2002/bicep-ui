@@ -146,7 +146,9 @@ export default function HistoryPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {history.map((entry) => (
+              {history.map((entry) => {
+                const fmt = entry.sourceFormat ?? "bicep";
+                return (
                 <TableRow key={entry.id}>
                   <TableCell className="px-4">
                     <div className="flex items-center gap-2">
@@ -160,6 +162,16 @@ export default function HistoryPage() {
                           ? `Project (${entry.bicepFileCount ?? "?"} files)`
                           : entry.bicepFile}
                       </span>
+                      <Badge
+                        variant="outline"
+                        className={
+                          fmt === "cloudformation"
+                            ? "text-[10px] border-orange-500/30 text-orange-600 dark:text-orange-400"
+                            : "text-[10px] border-blue-500/30 text-blue-600 dark:text-blue-400"
+                        }
+                      >
+                        {fmt === "cloudformation" ? "CloudFormation" : "Bicep"}
+                      </Badge>
                     </div>
                   </TableCell>
                   <TableCell className="px-4 text-muted-foreground">
@@ -209,7 +221,8 @@ export default function HistoryPage() {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </div>
