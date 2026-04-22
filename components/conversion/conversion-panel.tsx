@@ -248,6 +248,7 @@ export function ConversionPanel() {
     }
 
     // Need API key first, then Azure config
+    // eslint-disable-next-line react-hooks/immutability -- useRef.current mutation is the intended React pattern for dialog-state pass-through
     pendingActionRef.current = "deploy";
     setApiKeyInput("");
     setShowApiKeyDialog(true);
