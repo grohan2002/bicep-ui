@@ -146,6 +146,7 @@ export async function sendMultiFileConversionStream(
   callbacks: ConversionCallbacks,
   signal?: AbortSignal,
   apiKey?: string,
+  sourceFormat: SourceFormat = "bicep",
 ): Promise<void> {
   let response: Response;
 
@@ -153,7 +154,12 @@ export async function sendMultiFileConversionStream(
     response = await fetch("/api/convert", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bicepFiles, entryPoint, ...(apiKey ? { apiKey } : {}) }),
+      body: JSON.stringify({
+        bicepFiles,
+        entryPoint,
+        sourceFormat,
+        ...(apiKey ? { apiKey } : {}),
+      }),
       signal,
     });
   } catch (err: unknown) {

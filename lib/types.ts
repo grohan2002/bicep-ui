@@ -280,3 +280,37 @@ export interface InputContextSummary {
   /** Whether the combined content exceeds the token budget */
   exceedsTokenBudget: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// CloudFormation multi-file (nested-stack) support
+// ---------------------------------------------------------------------------
+
+/** Map of relative file path → CloudFormation template content (YAML or JSON). */
+export type CloudFormationFiles = Record<string, string>;
+
+/**
+ * A nested-stack reference found inside a CloudFormation template — i.e. an
+ * `AWS::CloudFormation::Stack` resource whose `Properties.TemplateURL` points
+ * at another template.
+ */
+export interface CloudFormationModuleRef {
+  /** Logical resource ID of the AWS::CloudFormation::Stack resource. */
+  name: string;
+  /** Original `TemplateURL` value as written, e.g. './templates/storage.yaml' or 'https://s3.amazonaws.com/...'. */
+  source: string;
+  /** The file that contains this nested-stack declaration. */
+  declaredIn: string;
+  /**
+   * Resolved key into CloudFormationFiles for relative paths. `null` for
+   * external `TemplateURL`s (HTTPS / S3 — cannot be resolved offline).
+   */
+  resolvedPath: string | null;
+}
+
+/** Dependency graph for multi-file CloudFormation projects (nested stacks). */
+export interface CloudFormationDependencyGraph {
+  files: string[];
+  modules: CloudFormationModuleRef[];
+  processingOrder: string[];
+  unresolvedModules: CloudFormationModuleRef[];
+}

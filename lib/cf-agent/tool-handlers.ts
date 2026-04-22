@@ -41,64 +41,13 @@ function isSafeReadPath(filePath: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// CloudFormation YAML schema — decodes short-form intrinsic tags to the
-// long-form JSON shape that CloudFormation natively uses ({"Fn::X": ...}).
-// This gives the agent a single canonical structure to reason about regardless
-// of whether the input was YAML or JSON.
+// CloudFormation YAML schema — extracted to lib/cf-yaml-schema.ts so the same
+// schema can be used by browser-safe code (lib/cf-modules.ts) without pulling
+// this server-only module's Node imports (fs, path) into the client bundle.
 // ---------------------------------------------------------------------------
 
-/** The CF intrinsic tags with their long-form `Fn::X` equivalents. */
-const INTRINSIC_TAGS: ReadonlyArray<readonly [string, string]> = [
-  ["!Ref", "Ref"],
-  ["!GetAtt", "Fn::GetAtt"],
-  ["!Sub", "Fn::Sub"],
-  ["!Join", "Fn::Join"],
-  ["!If", "Fn::If"],
-  ["!Equals", "Fn::Equals"],
-  ["!Not", "Fn::Not"],
-  ["!And", "Fn::And"],
-  ["!Or", "Fn::Or"],
-  ["!FindInMap", "Fn::FindInMap"],
-  ["!Base64", "Fn::Base64"],
-  ["!Select", "Fn::Select"],
-  ["!Split", "Fn::Split"],
-  ["!ImportValue", "Fn::ImportValue"],
-  ["!Cidr", "Fn::Cidr"],
-  ["!GetAZs", "Fn::GetAZs"],
-  ["!Transform", "Fn::Transform"],
-  ["!Condition", "Condition"],
-  ["!ToJsonString", "Fn::ToJsonString"],
-  ["!Length", "Fn::Length"],
-];
-
-function buildCloudFormationYamlSchema(): yaml.Schema {
-  const kinds: ReadonlyArray<"scalar" | "sequence" | "mapping"> = [
-    "scalar",
-    "sequence",
-    "mapping",
-  ];
-  const types: yaml.Type[] = [];
-  for (const [short, long] of INTRINSIC_TAGS) {
-    for (const kind of kinds) {
-      types.push(
-        new yaml.Type(short, {
-          kind,
-          construct(data: unknown) {
-            // GetAtt short-form supports "Resource.Attr" — expand into [Resource, Attr]
-            if (short === "!GetAtt" && typeof data === "string") {
-              const [res, ...attrParts] = data.split(".");
-              return { [long]: [res, attrParts.join(".")] };
-            }
-            return { [long]: data };
-          },
-        }),
-      );
-    }
-  }
-  return yaml.DEFAULT_SCHEMA.extend(types);
-}
-
-const CF_YAML_SCHEMA = buildCloudFormationYamlSchema();
+export { CF_YAML_SCHEMA } from "../cf-yaml-schema";
+import { CF_YAML_SCHEMA } from "../cf-yaml-schema";
 
 /** Parse a CF template into a canonical object form. */
 function parseCfTemplate(content: string): Record<string, unknown> {
@@ -196,9 +145,17 @@ function summariseSections(doc: Record<string, unknown>): string {
 // Handler factory — returns a map combining CF-specific + shared handlers
 // ---------------------------------------------------------------------------
 
+/** Extended options that include the in-memory CF file map (multi-file mode). */
+export interface CfToolHandlerOptions extends ToolHandlerCallbacks {
+  /** Project-relative path → CloudFormation template content. */
+  cfFilesContext?: Record<string, string>;
+}
+
 export function createCfToolHandlers(
-  callbacks?: ToolHandlerCallbacks,
+  callbacksOrOptions?: ToolHandlerCallbacks | CfToolHandlerOptions,
 ): Record<string, (input: Record<string, unknown>) => Promise<ToolResult>> {
+  const callbacks = callbacksOrOptions;
+  const cfFilesContext = (callbacksOrOptions as CfToolHandlerOptions | undefined)?.cfFilesContext;
   // ---- Tool 1: read_cf_template -----------------------------------------
   async function readCfTemplate(
     input: Record<string, unknown>,
@@ -272,6 +229,25 @@ export function createCfToolHandlers(
     return ok(`${cfType} -> ${tf}`);
   }
 
+  // ---- Tool 4: read_cf_file_content (multi-file mode) -------------------
+  async function readCfFileContent(
+    input: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const filePath = String(input.file_path ?? "").trim();
+    if (!cfFilesContext) {
+      return err("read_cf_file_content is only available in multi-file mode.");
+    }
+    const content = cfFilesContext[filePath];
+    if (content === undefined) {
+      const available = Object.keys(cfFilesContext).sort().join(", ");
+      return err(
+        `File not found in project: ${filePath}\nAvailable files: ${available}`,
+      );
+    }
+    const lineCount = content.split("\n").length;
+    return ok(`File: ${filePath}\nLines: ${lineCount}\n\n${content}`);
+  }
+
   // Pull in the shared HCL handlers (generate_terraform, write_terraform_files,
   // format_terraform, validate_terraform) and compose the final map.
   const shared = createToolHandlers(callbacks);
@@ -280,6 +256,7 @@ export function createCfToolHandlers(
     read_cf_template: readCfTemplate,
     parse_cloudformation: parseCloudformation,
     lookup_cf_resource_mapping: lookupCfResourceMapping,
+    read_cf_file_content: readCfFileContent,
     generate_terraform: shared.generate_terraform,
     write_terraform_files: shared.write_terraform_files,
     format_terraform: shared.format_terraform,

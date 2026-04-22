@@ -5,7 +5,10 @@
 
 import { NextRequest } from "next/server";
 import { chatStream, chatStreamMultiFile } from "@/lib/agent/stream";
-import { chatStreamCloudFormation } from "@/lib/cf-agent/stream";
+import {
+  chatStreamCloudFormation,
+  chatStreamCloudFormationMultiFile,
+} from "@/lib/cf-agent/stream";
 import { ConvertRequestSchema, ConvertMultiFileRequestSchema } from "@/lib/schemas";
 import { createRequestLogger } from "@/lib/logger";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -194,11 +197,23 @@ function handleMultiFile(
     );
   }
 
-  const { bicepFiles, entryPoint, apiKey } = parsed.data;
+  const { bicepFiles, apiKey, sourceFormat } = parsed.data;
   const fileCount = Object.keys(bicepFiles).length;
+  const isCloudFormation = sourceFormat === "cloudformation";
+  // entryPoint default depends on sourceFormat
+  const entryPoint =
+    parsed.data.entryPoint ?? (isCloudFormation ? "main.yaml" : "main.bicep");
 
-  log.info({ ip, fileCount, entryPoint }, "Multi-file conversion started");
-  auditLog("conversion.multi_started", { fileCount, entryPoint }, undefined, ip);
+  log.info(
+    { ip, fileCount, entryPoint, sourceFormat },
+    "Multi-file conversion started",
+  );
+  auditLog(
+    "conversion.multi_started",
+    { fileCount, entryPoint, sourceFormat },
+    undefined,
+    ip,
+  );
 
   const encoder = new TextEncoder();
   const { readable, writable } = new TransformStream();
@@ -210,7 +225,10 @@ function handleMultiFile(
   }
 
   const signal = request.signal;
-  const mfCacheKey = multiFileCacheKey(bicepFiles);
+  // Cache key — namespaced per source format so a Bicep project and a CF
+  // project that happen to hash identically never collide.
+  const baseCacheKey = multiFileCacheKey(bicepFiles);
+  const mfCacheKey = isCloudFormation ? `cf:${baseCacheKey}` : baseCacheKey;
 
   // Check cache first (only when not using a custom API key)
   const cacheCheck = (async () => {
@@ -243,10 +261,19 @@ function handleMultiFile(
       sendEvent(event);
     }
 
-    chatStreamMultiFile(bicepFiles, entryPoint, wrappedSendEvent, signal, apiKey)
+    const streamFn = isCloudFormation
+      ? chatStreamCloudFormationMultiFile
+      : chatStreamMultiFile;
+
+    streamFn(bicepFiles, entryPoint, wrappedSendEvent, signal, apiKey)
       .then(() => {
-        log.info("Multi-file conversion completed");
-        auditLog("conversion.multi_completed", { fileCount, entryPoint }, undefined, ip);
+        log.info({ sourceFormat }, "Multi-file conversion completed");
+        auditLog(
+          "conversion.multi_completed",
+          { fileCount, entryPoint, sourceFormat },
+          undefined,
+          ip,
+        );
 
         // Cache successful conversions using pre-computed key (no double-hashing)
         if (!apiKey && cachedFiles && Object.keys(cachedFiles).length > 0) {
@@ -260,7 +287,12 @@ function handleMultiFile(
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         log.error({ error: message }, "Multi-file conversion failed");
-        auditLog("conversion.multi_failed", { error: message }, undefined, ip);
+        auditLog(
+          "conversion.multi_failed",
+          { error: message, sourceFormat },
+          undefined,
+          ip,
+        );
         sendEvent({ type: "error", message });
       })
       .finally(() => {

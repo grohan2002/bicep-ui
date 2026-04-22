@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Root stack — composes Network, Storage, and IAM via nested stacks.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: terrain-demo
+    Description: Project tag applied to all resources.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./templates/network.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        VpcCidr: 10.0.0.0/16
+
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkStack
+    Properties:
+      TemplateURL: ./templates/storage.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        # Cross-stack handoff: VPC ID flows from Network → Storage
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+
+  IamStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: StorageStack
+    Properties:
+      TemplateURL: ./templates/iam.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        # Cross-stack handoff: bucket ARN from Storage → IAM
+        DataBucketArn: !GetAtt StorageStack.Outputs.DataBucketArn
+
+Outputs:
+  VpcId:
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+    Description: ID of the VPC created by the network stack.
+  DataBucketName:
+    Value: !GetAtt StorageStack.Outputs.DataBucketName
+  AppRoleArn:
+    Value: !GetAtt IamStack.Outputs.AppRoleArn

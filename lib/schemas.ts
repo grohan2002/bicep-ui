@@ -16,14 +16,21 @@ export const ConvertRequestSchema = z.object({
   sourceFormat: z.enum(["bicep", "cloudformation"]).default("bicep"),
 });
 
-/** POST /api/convert — multi-file */
+/** POST /api/convert — multi-file (Bicep project or CloudFormation nested-stacks) */
 export const ConvertMultiFileRequestSchema = z.object({
   bicepFiles: z.record(z.string(), z.string()).refine(
     (obj) => Object.keys(obj).length > 0,
     "bicepFiles must contain at least one file",
   ),
-  entryPoint: z.string().default("main.bicep"),
+  // Default depends on sourceFormat (resolved in the route handler).
+  entryPoint: z.string().optional(),
   apiKey: z.string().optional(),
+  /**
+   * Source IaC format. Defaults to `"bicep"` for back-compat. When
+   * `"cloudformation"`, the file map is treated as a nested-stacks project
+   * and dispatched to the CF multi-file pipeline.
+   */
+  sourceFormat: z.enum(["bicep", "cloudformation"]).default("bicep"),
 });
 
 /** Azure Service Principal credentials for deployment. */

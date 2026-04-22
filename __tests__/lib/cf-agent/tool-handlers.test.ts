@@ -162,4 +162,52 @@ Resources:
     expect(typeof handlers.validate_terraform).toBe("function");
     expect(typeof handlers.format_terraform).toBe("function");
   });
+
+  // -------------------------------------------------------------------------
+  // read_cf_file_content (multi-file mode)
+  // -------------------------------------------------------------------------
+
+  describe("read_cf_file_content", () => {
+    it("errors when no cfFilesContext is provided (single-file mode)", async () => {
+      const result = await handlers.read_cf_file_content({
+        file_path: "templates/network.yaml",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/multi-file mode/);
+    });
+
+    it("returns the file content when present in the context", async () => {
+      const cfHandlers = createCfToolHandlers({
+        cfFilesContext: {
+          "main.yaml": "Resources: {}",
+          "templates/network.yaml": "Resources:\n  VPC: {}\n",
+        },
+      });
+      const result = await cfHandlers.read_cf_file_content({
+        file_path: "templates/network.yaml",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toContain("File: templates/network.yaml");
+      expect(result.data).toContain("Lines: 3");
+      expect(result.data).toContain("VPC");
+    });
+
+    it("errors with the available file list when path is missing", async () => {
+      const cfHandlers = createCfToolHandlers({
+        cfFilesContext: {
+          "main.yaml": "x",
+          "templates/storage.yaml": "y",
+        },
+      });
+      const result = await cfHandlers.read_cf_file_content({
+        file_path: "templates/missing.yaml",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/main\.yaml/);
+      expect(result.error).toMatch(/templates\/storage\.yaml/);
+    });
+  });
 });

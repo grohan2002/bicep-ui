@@ -157,6 +157,7 @@ export function useConversion() {
             callbacks,
             controller.signal,
             apiKey,
+            store.sourceFormat,
           );
         } else {
           await sendConversionStream(

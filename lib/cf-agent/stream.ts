@@ -20,7 +20,13 @@ import path from "node:path";
 
 import { cloudformationTools } from "./tools";
 import { createCfToolHandlers } from "./tool-handlers";
-import { CF_SYSTEM_PROMPT } from "./system-prompt";
+import { CF_SYSTEM_PROMPT, CF_SYSTEM_PROMPT_MULTI_FILE } from "./system-prompt";
+import {
+  buildCloudFormationDependencyGraph,
+  buildCloudFormationMultiFileUserMessage,
+  summarizeCloudFormationContext,
+} from "../cf-modules";
+import type { CloudFormationFiles } from "../types";
 import {
   paceApiCall,
   compressMessages,
@@ -69,6 +75,7 @@ function getToolLabel(toolName: string): string {
     read_cf_template: "Reading CloudFormation template",
     parse_cloudformation: "Parsing CloudFormation",
     lookup_cf_resource_mapping: "Looking up AWS resource mapping",
+    read_cf_file_content: "Reading CloudFormation file content",
     generate_terraform: "Generating Terraform HCL",
     write_terraform_files: "Writing Terraform files",
     format_terraform: "Formatting Terraform",
@@ -319,6 +326,289 @@ export async function chatStreamCloudFormation(
     logger.info(
       { totalCost: totalCost.totalCostUsd, rounds: round, model },
       "CloudFormation conversion complete",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-file (nested-stacks) streaming entrypoint
+// ---------------------------------------------------------------------------
+
+const MAX_TOKENS_MULTI = 16_384;
+const MAX_TOOL_ROUNDS_MULTI = 40;
+
+export async function chatStreamCloudFormationMultiFile(
+  cfFiles: CloudFormationFiles,
+  entryPoint: string,
+  emit: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+  apiKey?: string,
+): Promise<void> {
+  const client = apiKey ? new Anthropic({ apiKey }) : new Anthropic();
+  // Force Sonnet for multi-file projects — the routing heuristic is built for
+  // single Bicep files and undervalues the complexity of multi-stack CF.
+  const model = "claude-sonnet-4-20250514";
+
+  let fullReply = "";
+  const allToolCalls: ToolCallInfo[] = [];
+  let totalCost: CostInfo = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalCostUsd: 0,
+    model,
+  };
+
+  const outputDir = createIsolatedOutputDir();
+
+  // Validate token budget before sending a single API request
+  const ctx = summarizeCloudFormationContext(cfFiles, entryPoint);
+  if (ctx.exceedsTokenBudget) {
+    emit({
+      type: "error",
+      message:
+        `Project exceeds the 80K-token budget (${ctx.totalLines} lines across ${ctx.totalFiles} files). ` +
+        "Split into a smaller scope or convert templates individually.",
+    });
+    cleanupOutputDir(outputDir);
+    return;
+  }
+
+  // Accumulate terraform files across multiple write_terraform_files calls so
+  // a second call (e.g. just terraform.tfvars.example) doesn't replace the
+  // entire output from the first call. Same pattern as the single-file path.
+  let accumulatedTerraformFiles: Record<string, string> = {};
+
+  const handlerCallbacks: ToolHandlerCallbacks = {
+    onTerraformOutput: (files) => {
+      accumulatedTerraformFiles = { ...accumulatedTerraformFiles, ...files };
+      emit({ type: "terraform_output", files: accumulatedTerraformFiles });
+    },
+    onValidation: (passed, output) => {
+      emit({ type: "validation", passed, output });
+    },
+  };
+  const handlers = createCfToolHandlers({
+    ...handlerCallbacks,
+    cfFilesContext: cfFiles,
+  });
+
+  const mcpTools = await getTerraformMcpTools();
+  const toolsForClaude = [...cloudformationTools, ...mcpTools];
+
+  // Build the multi-file project prompt (dependency graph + files in topo order)
+  const graph = buildCloudFormationDependencyGraph(cfFiles);
+  const userMessage = buildCloudFormationMultiFileUserMessage(
+    cfFiles,
+    entryPoint,
+    graph,
+    ctx,
+  );
+  const userMessageWithDir =
+    userMessage +
+    `\n\nIMPORTANT: Use this output directory for ALL file operations (write_terraform_files, validate_terraform, format_terraform): ${outputDir}`;
+
+  const messages: MessageParam[] = [
+    {
+      role: "user",
+      content: [{ type: "text", text: userMessageWithDir }],
+    },
+  ];
+
+  let round = 0;
+
+  try {
+    while (round < MAX_TOOL_ROUNDS_MULTI) {
+      round++;
+
+      if (signal?.aborted) {
+        emit({ type: "error", message: "Conversion cancelled" });
+        return;
+      }
+
+      emit({
+        type: "progress",
+        step: round,
+        total: MAX_TOOL_ROUNDS_MULTI,
+        label:
+          round === 1
+            ? "Starting multi-file CloudFormation conversion"
+            : `Tool round ${round}`,
+      });
+
+      await paceApiCall();
+
+      const messagesToSend = compressMessages(messages, round);
+
+      const stream = await withRetry(() =>
+        Promise.resolve(
+          client.messages.stream({
+            model,
+            max_tokens: MAX_TOKENS_MULTI,
+            system: [
+              {
+                type: "text",
+                text: CF_SYSTEM_PROMPT_MULTI_FILE,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+            tools: toolsForClaude,
+            messages: messagesToSend,
+          }),
+        ),
+      );
+
+      stream.on("text", (textDelta) => {
+        fullReply += textDelta;
+        emit({ type: "text_delta", text: textDelta });
+      });
+
+      let finalMessage: Anthropic.Message;
+      try {
+        finalMessage = await stream.finalMessage();
+      } catch (err: unknown) {
+        if (signal?.aborted) {
+          emit({ type: "error", message: "Conversion cancelled" });
+          return;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        emit({ type: "error", message: `API error: ${msg}` });
+        return;
+      }
+
+      const usage = finalMessage.usage;
+      const roundCost = calculateCost(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        (usage as unknown as Record<string, number>).cache_read_input_tokens ?? 0,
+        (usage as unknown as Record<string, number>).cache_creation_input_tokens ?? 0,
+      );
+      totalCost = addCosts(totalCost, roundCost);
+
+      if (finalMessage.stop_reason !== "tool_use") {
+        emit({
+          type: "done",
+          fullReply,
+          toolCalls: allToolCalls,
+          costInfo: totalCost,
+          model,
+        });
+        return;
+      }
+
+      const toolUseBlocks = finalMessage.content.filter(
+        (block): block is ToolUseBlock => block.type === "tool_use",
+      );
+
+      const toolResults: ToolResultBlockParam[] = [];
+
+      for (const toolUse of toolUseBlocks) {
+        const toolInput = (toolUse.input ?? {}) as Record<string, unknown>;
+        const toolCall: ToolCallInfo = {
+          tool: toolUse.name,
+          input: toolInput,
+        };
+        allToolCalls.push(toolCall);
+
+        emit({
+          type: "tool_start",
+          toolName: toolUse.name,
+          toolInput,
+        });
+
+        // Per-file progress label for parse_cloudformation calls
+        let progressLabel = getToolLabel(toolUse.name);
+        if (toolUse.name === "parse_cloudformation") {
+          const inputContent = String(toolInput.content ?? "");
+          // Match by content prefix against the project files
+          for (const [path, content] of Object.entries(cfFiles)) {
+            if (inputContent.length > 0 && inputContent.startsWith(content.slice(0, 200))) {
+              progressLabel = `Parsing ${path}`;
+              break;
+            }
+          }
+        } else if (toolUse.name === "read_cf_file_content") {
+          const fp = String(toolInput.file_path ?? "").trim();
+          if (fp) progressLabel = `Reading ${fp}`;
+        } else if (toolUse.name === "write_terraform_files") {
+          progressLabel = "Writing all Terraform files";
+        }
+
+        emit({
+          type: "progress",
+          step: round,
+          total: MAX_TOOL_ROUNDS_MULTI,
+          label: progressLabel,
+        });
+
+        const handler = handlers[toolUse.name];
+        let resultText: string;
+        let isError = false;
+
+        if (handler) {
+          try {
+            const result = await handler(toolInput);
+            isError = !result.ok;
+            resultText = result.ok ? result.data : result.error;
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            resultText = `Error: Tool execution failed: ${msg}`;
+            isError = true;
+          }
+        } else if (isTerraformMcpTool(toolUse.name)) {
+          const result = await callMcpTool(toolUse.name, toolInput);
+          isError = !result.ok;
+          resultText = result.ok ? result.data : result.error;
+        } else {
+          resultText = `Error: Unknown tool '${toolUse.name}'`;
+          isError = true;
+        }
+
+        emit({
+          type: "tool_result",
+          toolName: toolUse.name,
+          isError,
+        });
+
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: resultText,
+          is_error: isError,
+        });
+      }
+
+      messages.push({
+        role: "assistant",
+        content: finalMessage.content as ContentBlock[],
+      });
+      messages.push({
+        role: "user",
+        content: toolResults,
+      });
+    }
+
+    emit({
+      type: "done",
+      fullReply:
+        fullReply +
+        "\n\n[Reached maximum tool rounds. Some steps may not have completed.]",
+      toolCalls: allToolCalls,
+      costInfo: totalCost,
+      model,
+    });
+  } finally {
+    cleanupOutputDir(outputDir);
+    logger.info(
+      {
+        totalCost: totalCost.totalCostUsd,
+        rounds: round,
+        model,
+        fileCount: Object.keys(cfFiles).length,
+      },
+      "Multi-file CloudFormation conversion complete",
     );
   }
 }

@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM stack — application role scoped to a specific S3 bucket.
+
+Parameters:
+  ProjectName:
+    Type: String
+  DataBucketArn:
+    Type: String
+    Description: Bucket ARN passed in from the Storage stack.
+
+Resources:
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-app-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AppPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-app-policy"
+      Roles: [!Ref AppRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:GetObject"
+              - "s3:PutObject"
+              - "s3:ListBucket"
+            Resource:
+              - !Ref DataBucketArn
+              - !Sub "${DataBucketArn}/*"
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-app-profile"
+      Roles: [!Ref AppRole]
+
+Outputs:
+  AppRoleArn:
+    Value: !GetAtt AppRole.Arn
+  AppInstanceProfileName:
+    Value: !Ref AppInstanceProfile

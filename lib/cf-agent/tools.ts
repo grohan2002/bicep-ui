@@ -87,6 +87,26 @@ export const cloudformationTools: Tool[] = [
     },
   },
 
+  // Tool 4: Read a CloudFormation file from the in-memory project (multi-file mode).
+  {
+    name: "read_cf_file_content",
+    description:
+      "Read the full content of a CloudFormation file from the in-memory project context. " +
+      "Use this when a file was summarised in the user message and you need its full content. " +
+      "Only available in multi-file conversion mode.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        file_path: {
+          type: "string",
+          description:
+            "Project-relative path of the CF file, e.g. 'templates/storage.yaml'.",
+        },
+      },
+      required: ["file_path"],
+    },
+  },
+
   // Shared HCL-output tools (imported from lib/agent/tools.ts)
   ...sharedTools,
 ];

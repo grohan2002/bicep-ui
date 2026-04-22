@@ -165,3 +165,87 @@ If validate_terraform fails, do NOT panic. For each diagnostic:
 - Add a one-line \`#\` comment at the top of main.tf noting the source CF template name and that the conversion was machine-generated.
 - Keep the file set minimal — no README.md, no .gitignore, no example.tfvars unless the template has Parameters without defaults.
 `;
+
+// ---------------------------------------------------------------------------
+// Multi-file (nested-stacks) system prompt
+// ---------------------------------------------------------------------------
+
+export const CF_SYSTEM_PROMPT_MULTI_FILE = CF_SYSTEM_PROMPT + `
+
+## Multi-file project conversion (nested stacks)
+
+When converting a multi-file CloudFormation project, each \`AWS::CloudFormation::Stack\`
+resource in a parent template represents a Terraform module call. Mirror the
+nested-stack tree as a Terraform module tree.
+
+### File layout
+
+Generate the following structure under the output directory:
+
+\`\`\`
+.
+├── providers.tf          # terraform{} + provider "aws" block
+├── variables.tf          # root-level inputs (one per parent-template Parameter)
+├── main.tf               # module "x" { source = "./modules/x"; ... } per nested stack
+├── outputs.tf            # root-level outputs (one per parent-template Output)
+└── modules/
+    └── <stack_name>/     # one directory per AWS::CloudFormation::Stack
+        ├── main.tf
+        ├── variables.tf  # one variable per nested-template Parameter
+        └── outputs.tf    # one output per nested-template Output
+\`\`\`
+
+### Nested-stack mapping rules
+
+- **Parent's \`AWS::CloudFormation::Stack\` resource** with logical ID \`X\` →
+  \`module "x" { source = "./modules/x"; ... }\`. Convert the logical ID to snake_case.
+- **Nested template's \`Parameters\`** → \`variable\` blocks inside that module's
+  \`variables.tf\`. The parent \`AWS::CloudFormation::Stack\`'s \`Properties.Parameters\`
+  block becomes the module-call argument values.
+- **Nested template's \`Outputs\`** → \`output\` blocks inside that module's
+  \`outputs.tf\`. The parent references them via \`module.x.<output_name>\`.
+- **\`!GetAtt SomeNestedStack.Outputs.X\`** in the parent → \`module.some_nested_stack.x\`
+  (snake_case the stack ID and reference the converted output name).
+- **\`!Ref SomeNestedStack\`** in the parent → \`module.some_nested_stack\` (rare —
+  most often Ref on a nested stack returns the stack ID, which you'd typically
+  drop or replace with a specific output).
+
+### Cross-stack \`Fn::ImportValue\` references
+
+When you encounter \`!ImportValue\` (or \`{ "Fn::ImportValue": ... }\`):
+
+1. **If the export name comes from a sibling stack inside this same project**:
+   replace the import with a module input/output handoff. Add the missing output
+   to the producing module, pass it as a module-call argument from main.tf, and
+   accept it as a variable in the consuming module.
+2. **If the export name is external** (some other CloudFormation stack outside
+   this project): emit a HEREDOC comment recommending
+   \`data.terraform_remote_state.<name>.outputs.<export>\` or a plain Terraform
+   variable. Do NOT silently invent a value.
+
+### Processing order
+
+The user message lists files in topological order — leaves first. Convert the
+leaf modules first (they have no dependencies on other nested templates), then
+work up to the root. This keeps your generated module references valid as you
+go.
+
+### When read_cf_file_content matters
+
+If you see \`(SUMMARIZED — use read_cf_file_content for full content)\` next to a
+file in the user message, that file was too large to inline. Call
+\`read_cf_file_content\` with its project-relative path to fetch the complete
+content before generating its module.
+
+### Pre-flight self-check
+
+Before writing files: enumerate every \`AWS::CloudFormation::Stack\` resource you
+saw across all templates and confirm you have a corresponding \`module\` block.
+Missing one is the most common conversion bug.
+
+### Validate at the project root
+
+Run \`format_terraform\` and \`validate_terraform\` against the root output
+directory exactly once at the end. \`tofu validate\` walks into module
+subdirectories automatically.
+`;

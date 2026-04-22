@@ -20,39 +20,63 @@ import {
 import { toast } from "@/components/ui/sonner";
 import { useConversionStore } from "@/lib/store";
 import { detectEntryPoint, parseModuleReferences } from "@/lib/bicep-modules";
+import {
+  detectCloudFormationEntryPoint,
+  parseNestedStackReferences,
+} from "@/lib/cf-modules";
 import type { BicepFiles } from "@/lib/types";
 
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024; // 10MB aggregate
 const MAX_FILE_COUNT = 50; // Max files per project
 
+const BICEP_EXTS = [".bicep", ".bicepparam"];
+const CF_EXTS = [".yaml", ".yml", ".json", ".template"];
+
+function isFormatFile(name: string, exts: readonly string[]): boolean {
+  const lower = name.toLowerCase();
+  return exts.some((ext) => lower.endsWith(ext));
+}
+
 export function MultiFileUpload() {
   const setBicepFiles = useConversionStore((s) => s.setBicepFiles);
+  const sourceFormat = useConversionStore((s) => s.sourceFormat);
+  const isCf = sourceFormat === "cloudformation";
+  const exts = isCf ? CF_EXTS : BICEP_EXTS;
+  const acceptAttr = exts.join(",");
+  const formatNoun = isCf ? "CloudFormation" : "Bicep";
+  const formatLabel = isCf ? ".yaml / .yml / .json / .template" : ".bicep / .bicepparam";
+
   const dirInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<BicepFiles | null>(null);
   const [selectedEntryPoint, setSelectedEntryPoint] = useState<string>("");
-  const [registryModules, setRegistryModules] = useState<string[]>([]);
+  /** External references (Bicep registry / CF external TemplateURL). */
+  const [externalRefs, setExternalRefs] = useState<string[]>([]);
 
   const pendingPaths = useMemo(
     () => (pendingFiles ? Object.keys(pendingFiles).sort() : []),
     [pendingFiles],
   );
 
-  const rootBicepFiles = useMemo(
-    () => pendingPaths.filter((p) => !p.includes("/") && p.endsWith(".bicep") && !p.endsWith(".bicepparam")),
-    [pendingPaths],
-  );
+  const rootSourceFiles = useMemo(() => {
+    if (isCf) {
+      return pendingPaths.filter(
+        (p) => !p.includes("/") && CF_EXTS.some((ext) => p.toLowerCase().endsWith(ext)),
+      );
+    }
+    return pendingPaths.filter(
+      (p) => !p.includes("/") && p.endsWith(".bicep") && !p.endsWith(".bicepparam"),
+    );
+  }, [pendingPaths, isCf]);
 
   const processFileList = useCallback(
     (fileList: FileList) => {
-      const files: BicepFiles = {};
       let totalSize = 0;
 
-      for (const file of Array.from(fileList)) {
-        const name = file.name;
-        if (!name.endsWith(".bicep") && !name.endsWith(".bicepparam")) continue;
+      const accepted = Array.from(fileList).filter((f) => isFormatFile(f.name, exts));
 
+      for (const file of accepted) {
         totalSize += file.size;
         if (totalSize > MAX_TOTAL_SIZE) {
           toast.error("Project too large", {
@@ -60,30 +84,15 @@ export function MultiFileUpload() {
           });
           return;
         }
-
-        // Preserve relative path from directory upload or use filename
-        const relativePath =
-          file.webkitRelativePath
-            ? file.webkitRelativePath.split("/").slice(1).join("/")
-            : name;
-
-        // Read file synchronously via FileReaderSync not available in main thread,
-        // so we collect promises
-        files[relativePath] = ""; // placeholder
       }
 
-      // Read all files
-      const readPromises = Array.from(fileList)
-        .filter(
-          (f) => f.name.endsWith(".bicep") || f.name.endsWith(".bicepparam"),
-        )
-        .map(async (file) => {
-          const relativePath = file.webkitRelativePath
-            ? file.webkitRelativePath.split("/").slice(1).join("/")
-            : file.name;
-          const content = await file.text();
-          return [relativePath, content] as [string, string];
-        });
+      const readPromises = accepted.map(async (file) => {
+        const relativePath = file.webkitRelativePath
+          ? file.webkitRelativePath.split("/").slice(1).join("/")
+          : file.name;
+        const content = await file.text();
+        return [relativePath, content] as [string, string];
+      });
 
       Promise.all(readPromises).then((entries) => {
         const result: BicepFiles = {};
@@ -92,8 +101,8 @@ export function MultiFileUpload() {
         }
 
         if (Object.keys(result).length === 0) {
-          toast.error("No Bicep files found", {
-            description: "The selection contains no .bicep or .bicepparam files",
+          toast.error(`No ${formatNoun} files found`, {
+            description: `The selection contains no ${formatLabel} files`,
           });
           return;
         }
@@ -105,25 +114,38 @@ export function MultiFileUpload() {
           return;
         }
 
-        const ep = detectEntryPoint(result);
+        const ep = isCf
+          ? detectCloudFormationEntryPoint(result)
+          : detectEntryPoint(result);
 
-        // Detect registry module references for user warning
-        const regMods: string[] = [];
+        // Detect external references for user warning. For Bicep these are
+        // registry / template-spec refs; for CF they are nested-stack
+        // TemplateURLs that point at external HTTPS / S3 URLs.
+        const ext: string[] = [];
         for (const [filePath, content] of Object.entries(result)) {
-          const refs = parseModuleReferences(filePath, content);
-          for (const ref of refs) {
-            if (ref.resolvedPath === null) {
-              regMods.push(`${ref.name} (${ref.source})`);
+          if (isCf) {
+            const refs = parseNestedStackReferences(filePath, content);
+            for (const ref of refs) {
+              if (ref.resolvedPath === null) {
+                ext.push(`${ref.name} (${ref.source})`);
+              }
+            }
+          } else {
+            const refs = parseModuleReferences(filePath, content);
+            for (const ref of refs) {
+              if (ref.resolvedPath === null) {
+                ext.push(`${ref.name} (${ref.source})`);
+              }
             }
           }
         }
-        setRegistryModules(regMods);
+        setExternalRefs(ext);
 
         setPendingFiles(result);
         setSelectedEntryPoint(ep);
       });
     },
-    [],
+    [exts, formatNoun, formatLabel, isCf],
   );
 
   const handleDrop = useCallback(
@@ -169,13 +191,13 @@ export function MultiFileUpload() {
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">Entry point:</span>
-          {rootBicepFiles.length > 1 ? (
+          {rootSourceFiles.length > 1 ? (
             <DropdownMenu>
               <DropdownMenuTrigger className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent transition-colors">
                 {selectedEntryPoint}
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                {rootBicepFiles.map((f) => (
+                {rootSourceFiles.map((f) => (
                   <DropdownMenuItem key={f} onClick={() => setSelectedEntryPoint(f)}>
                     {f}
                   </DropdownMenuItem>
@@ -187,15 +209,19 @@ export function MultiFileUpload() {
           )}
         </div>
 
-        {registryModules.length > 0 && (
+        {externalRefs.length > 0 && (
           <div className="w-full max-w-sm rounded-md border border-yellow-300 bg-yellow-50 dark:border-yellow-700 dark:bg-yellow-950/30 p-2.5 text-xs space-y-1">
             <div className="flex items-center gap-1.5 text-yellow-700 dark:text-yellow-400 font-medium">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              {registryModules.length} registry module(s) detected
+              {externalRefs.length}{" "}
+              {isCf
+                ? "external nested-stack TemplateURL(s) detected"
+                : "registry module(s) detected"}
             </div>
             <p className="text-yellow-600 dark:text-yellow-500 pl-5">
-              These reference external registries (br:, ts:) and cannot be resolved locally.
-              The converter will use its knowledge of AVM/registry modules to generate equivalent Terraform.
+              {isCf
+                ? "These nested stacks reference external HTTPS / S3 URLs that can't be inlined. The converter will emit a comment recommending data.terraform_remote_state for each."
+                : "These reference external registries (br:, ts:) and cannot be resolved locally. The converter will use its knowledge of AVM/registry modules to generate equivalent Terraform."}
             </p>
           </div>
         )}
@@ -227,7 +253,9 @@ export function MultiFileUpload() {
     >
       <FolderUp className="h-10 w-10 text-muted-foreground" />
       <div className="text-center space-y-1">
-        <p className="text-sm font-medium">Drop a Bicep project folder here</p>
+        <p className="text-sm font-medium">
+          Drop a {formatNoun} project folder here
+        </p>
         <p className="text-xs text-muted-foreground">or browse for files</p>
       </div>
 
@@ -251,7 +279,7 @@ export function MultiFileUpload() {
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        Accepts .bicep and .bicepparam files (max 10MB total)
+        Accepts {formatLabel} files (max 10MB total)
       </p>
 
       {/* Hidden inputs */}
@@ -266,7 +294,7 @@ export function MultiFileUpload() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".bicep,.bicepparam"
+        accept={acceptAttr}
         className="hidden"
         onChange={(e) => e.target.files && processFileList(e.target.files)}
       />

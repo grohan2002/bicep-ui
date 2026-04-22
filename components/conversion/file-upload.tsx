@@ -98,8 +98,6 @@ export function FileUpload() {
           size="sm"
           className="h-7 text-xs gap-1.5"
           onClick={() => setMode("project")}
-          disabled={isCf}
-          title={isCf ? "Multi-file projects are Bicep-only for now" : undefined}
         >
           <FolderUp className="h-3 w-3" />
           Project

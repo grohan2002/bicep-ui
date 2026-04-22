@@ -48,7 +48,6 @@ const CF_ROOT_EXTENSIONS = [".yaml", ".yml", ".json", ".template"];
 
 export function GitHubImport() {
   const setBicepFiles = useConversionStore((s) => s.setBicepFiles);
-  const setBicepContent = useConversionStore((s) => s.setBicepContent);
   const sourceFormat = useConversionStore((s) => s.sourceFormat);
   const isCf = sourceFormat === "cloudformation";
 
@@ -153,30 +152,15 @@ export function GitHubImport() {
 
   const confirmImport = useCallback(() => {
     if (!pendingFiles) return;
-    if (isCf) {
-      // Phase A: single-file CF pipeline. Load only the chosen entry point's
-      // content. Multi-file CF (nested-stack project conversion) is Phase B.
-      const content = pendingFiles[selectedEntryPoint] ?? "";
-      setBicepContent(content, selectedEntryPoint);
-      toast.success("GitHub template loaded", {
-        description: `${selectedEntryPoint} from ${repoUrl}`,
-      });
-    } else {
-      setBicepFiles(pendingFiles, selectedEntryPoint);
-      toast.success("GitHub project loaded", {
-        description: `${Object.keys(pendingFiles).length} file(s) from ${repoUrl}`,
-      });
-    }
+    // Both Bicep and CloudFormation now flow into the multi-file pipeline.
+    // (For a single-file repo, this still works — it's just a project of one.)
+    setBicepFiles(pendingFiles, selectedEntryPoint);
+    toast.success("GitHub project loaded", {
+      description: `${Object.keys(pendingFiles).length} file(s) from ${repoUrl}`,
+    });
     setPendingFiles(null);
     setRepoUrl("");
-  }, [
-    pendingFiles,
-    selectedEntryPoint,
-    setBicepFiles,
-    setBicepContent,
-    isCf,
-    repoUrl,
-  ]);
+  }, [pendingFiles, selectedEntryPoint, setBicepFiles, repoUrl]);
 
   // -------------------------------------------------------------------------
   // Preview phase
@@ -258,19 +242,6 @@ export function GitHubImport() {
           </div>
         )}
 
-        {/* CloudFormation: explain that GitHub import currently loads only
-            the chosen entry-point template. Multi-file (nested-stacks)
-            conversion is the upcoming Phase B. */}
-        {isCf && pendingPaths.length > 1 && (
-          <div className="w-full max-w-sm rounded-md border border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/30 p-2.5 text-xs">
-            <p className="text-blue-700 dark:text-blue-400">
-              {pendingPaths.length} CloudFormation files were discovered.
-              For now only the selected entry-point template will be converted —
-              multi-file project conversion (nested stacks) is coming in the
-              next release.
-            </p>
-          </div>
-        )}
 
         {/* Action buttons */}
         <div className="flex gap-2">
@@ -286,7 +257,7 @@ export function GitHubImport() {
           </Button>
           <Button variant="cta" size="sm" onClick={confirmImport}>
             <Upload className="h-3.5 w-3.5" />
-            {isCf ? "Load Entry Template" : "Load Project"}
+            Load Project
           </Button>
         </div>
       </div>
